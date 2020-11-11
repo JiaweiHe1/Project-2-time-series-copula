@@ -1,0 +1,358 @@
+---
+title: "Arima + Arima-Garch"
+author: "Jiawei He"
+date: "April 30, 2019"
+output: html_document
+---
+
+
+```{r}
+library(quantmod)
+library(tseries)
+library(forecast)
+
+FB = getSymbols('FB', from='2010-01-01', to='2018-12-31',auto.assign = FALSE)
+FB = na.omit(FB)
+VZ = getSymbols('VZ', from='2010-01-01', to='2018-12-31',auto.assign = FALSE)
+VZ = na.omit(VZ)
+GOOGL = getSymbols('GOOGL', from='2010-01-01', to='2018-12-31',auto.assign = FALSE)
+GOOGL = na.omit(GOOGL)
+MSFT = getSymbols('MSFT', from='2010-01-01', to='2018-12-31',auto.assign = FALSE)
+MSFT = na.omit(MSFT)
+
+FB_prices = FB[,4]
+VZ_prices = VZ[,4]
+GOOGL_prices = GOOGL[,4]
+MSFT_prices = MSFT[,4]
+
+r_FB = diff(log(FB_prices),lag=1)
+r_FB = r_FB[!is.na(r_FB)]
+plot(r_FB, type='l', main='log returns plot of FB')
+
+r_VZ = diff(log(VZ_prices),lag=1)
+r_VZ = r_VZ[!is.na(r_VZ)]
+plot(r_VZ, type='l', main='log returns plot of VZ')
+
+r_GOOGL = diff(log(GOOGL_prices),lag=1)
+r_GOOGL = r_GOOGL[!is.na(r_GOOGL)]
+plot(r_GOOGL, type='l', main='log returns plot of GOOGL')
+
+r_MSFT = diff(log(MSFT_prices),lag=1)
+r_MSFT = r_MSFT[!is.na(r_MSFT)]
+plot(r_MSFT, type='l', main='log returns plot of MSFT')
+
+FB_test = getSymbols('FB', from='2019-01-01', to='2019-04-30',auto.assign = FALSE)
+FB_test = na.omit(FB_test)
+VZ_test = getSymbols('VZ', from='2019-01-01', to='2019-04-30',auto.assign = FALSE)
+VZ_test = na.omit(VZ_test)
+GOOGL_test = getSymbols('GOOGL', from='2019-01-01', to='2019-04-30',auto.assign = FALSE)
+GOOGL_test = na.omit(GOOGL_test)
+MSFT_test = getSymbols('MSFT', from='2019-01-01', to='2019-04-30',auto.assign = FALSE)
+MSFT_test = na.omit(MSFT_test)
+
+FB_test_prices = FB_test[,4]
+VZ_test_prices = VZ_test[,4]
+GOOGL_test_prices = GOOGL_test[,4]
+MSFT_test_prices = MSFT_test[,4]
+
+r_test_FB = diff(log(FB_test_prices),lag=1)
+r_test_FB = r_test_FB[!is.na(r_test_FB)]
+r_test_VZ = diff(log(VZ_test_prices),lag=1)
+r_test_VZ = r_test_VZ[!is.na(r_test_VZ)]
+r_test_GOOGL = diff(log(GOOGL_test_prices),lag=1)
+r_test_GOOGL = r_test_GOOGL[!is.na(r_test_GOOGL)]
+r_test_MSFT = diff(log(MSFT_test_prices),lag=1)
+r_test_MSFT = r_test_MSFT[!is.na(r_test_MSFT)]
+
+```
+
+
+### Step 1: Test for Stationarity, Check autocorrelation and heteroscedasiticity
+### we check if those data are stationary TS. We also check whether arima is enough. That is to say, we check the existance of heteroscedasticity.
+
+### ADF检验：检验时间序列是否平稳: Performs the Augmented Dickey-Fuller test for the null hypothesis of a unit root of a univarate time series x (equivalently, x is a non-stationary time series).
+### 结论：对于这四个TS，就算不做差分，也是平稳的，所以表白在后续分析中没有差分的必要性。
+```{r}
+# check stationary of three data sets
+library(aTSA)
+library(forecast)
+cleaned_FB <- ts(r_FB)
+cleaned_VZ <- ts(r_VZ)
+cleaned_GOOGL <- ts(r_GOOGL)
+cleaned_MSFT <- ts(r_MSFT)
+
+adf.test(cleaned_FB)       # all < 0.05 
+adf.test(cleaned_VZ)       # all < 0.05 
+adf.test(cleaned_GOOGL) # all < 0.05
+adf.test(cleaned_MSFT)   # all < 0.05
+# < 0.05 means they are stationary time serise 拒绝了不平稳的原假设。
+
+```
+
+### If there is autocorrelation and heteroscedasiticity, it's absolutly not suitable to view the data as a random sample from some distribution.
+### box-P 拒绝原假设则说明有自相关性，不能简单的视为random sample去fit一个distribution
+### Breusch-Pagan 拒绝原假设说明有异方差
+
+```{r}
+# From box-p we know that all of them show autocorrelation
+test_FB <- Box.test(cleaned_FB, lag = 1, type = c("Box-Pierce"), fitdf = 0)  # > 0.05 at lag1
+test_VZ <- Box.test(cleaned_VZ, lag = 10, type = c("Box-Pierce"), fitdf = 0)  # lag > 10,  > 0.05 
+test_GOOGL <- Box.test(cleaned_GOOGL, lag = 2, type = c("Box-Pierce"), fitdf = 0) # lag > 2,  > 0.05 
+test_MSFT <- Box.test(cleaned_MSFT, lag = 1, type = c("Box-Pierce"), fitdf = 0) # > 0.05 at lag10
+test_FB
+test_VZ
+test_GOOGL
+test_MSFT
+
+
+
+## !!!!!!!!!!!!!!!!!!! The test result show ARIMA is not enough  即为：其实存在着异方差的情况
+library(lmtest)
+bptest_FB <- bptest(y~x, studentize = TRUE, data = list(x=c(1:1663), y=cleaned_FB))        # < 0.05
+bptest_VZ <- bptest(y~x, studentize = TRUE, data = list(x=c(1:2262), y=cleaned_VZ))        # > 0.05
+bptest_GOOGL <- bptest(y~x, studentize = TRUE, data = list(x=c(1:2262), y=cleaned_GOOGL))  # > 0.05
+bptest_MSFT <- bptest(y~x, studentize = TRUE, data = list(x=c(1:2262), y=cleaned_MSFT))    # > 0.05
+bptest_FB
+bptest_VZ
+bptest_GOOGL
+bptest_MSFT
+```
+
+#Diagnosing the ACF and PACF Plots
+```{r}
+par(mfrow=c(1,2))
+acf(cleaned_FB, main="FB log-return", lag.max=100) ##autocorelation
+pacf(cleaned_FB, main="FB log-return", lag.max=100) ##partial acf
+
+par(mfrow=c(1,2))
+acf(cleaned_VZ, main="VZ log-return")
+pacf(cleaned_VZ, main="VZ log-return") 
+
+par(mfrow=c(1,2))
+acf(cleaned_GOOGL, main="GOOGL log-return")
+pacf(cleaned_GOOGL,main="GOOGL log-return")
+
+par(mfrow=c(1,2))
+acf(cleaned_MSFT,main="MSFT log-return")
+pacf(cleaned_MSFT,main="MSFT log-return") 
+
+```
+
+
+# fit a arima model for FB data
+# 其实严格的来说，只有FB没有异方差，能用arima fit 其他都只能用arch或者garch
+```{r}
+library(quantmod);library(tseries);
+library(timeSeries);library(forecast);library(xts)
+TECHM = getSymbols('FB', from='2010-01-01', to='2019-04-28',auto.assign = FALSE)
+TECHM = na.omit(TECHM)
+
+stock_prices = TECHM[,4]
+
+stock = diff(log(stock_prices),lag=1)
+stock = stock[!is.na(stock)]
+
+arima_FB <- auto.arima(stock, seasonal = TRUE, max.p = 10, max.q = 10, max.order = 10, ic = "aic",trace = T)
+fit_FB <- arima(stock, order = c(2,0,2))
+summary(fit_FB)
+
+#forecast
+breakpoint = floor(nrow(stock)*(2.865/3))
+# Initialzing an xts object for Actual log returns
+Actual_series = xts(0, as.Date("2014-11-25","%Y-%m-%d"))
+ 
+# Initialzing a dataframe for the forecasted return series
+forecasted_series = data.frame(Forecasted = numeric())
+
+for (b in breakpoint:(nrow(stock)-1)) {
+  stock_train = stock[1:b, ]
+  stock_test = stock[(b+1):nrow(stock), ]
+  
+  # Summary of the ARIMA model using the determined (p,d,q) parameters
+  fit = arima(stock_train, order = c(2, 0, 2), include.mean = FALSE)
+  #summary(fit)
+  
+  # plotting a acf plot of the residuals
+  #acf(fit$residuals,main="Residuals plot")
+  
+  # Forecasting the log returns
+  arima.forecast = forecast(fit, h = 1, level=99)
+  #summary(arima.forecast)
+  
+  # plotting the forecast
+  #par(mfrow=c(1,1))
+  #plot(arima.forecast, main = "ARIMA Forecast")
+  
+  # Creating a series of forecasted returns for the forecasted period
+  forecasted_series = rbind(forecasted_series,arima.forecast$mean[1])
+  colnames(forecasted_series) = c("Forecasted")
+  
+  # Creating a series of actual returns for the forecasted period
+  Actual_return = stock[(b+1),]
+  Actual_series = c(Actual_series,xts(Actual_return))
+  rm(Actual_return)
+  
+  #print(stock_prices[(b+1),])
+  #print(stock_prices[(b+2),])
+}
+
+# Adjust the length of the Actual return series
+Actual_series = Actual_series[-1]
+
+# Create a time series object of the forecasted series
+forecasted_series = xts(forecasted_series,index(Actual_series))
+
+# Create a plot of the two return series - Actual versus Forecasted
+plot(Actual_series,type='l',main='Actual Returns Vs Forecasted Returns')
+lines(forecasted_series,lwd=1.5,col='red')
+legend('bottomright',c("Actual","Forecasted"),lty=c(1,1),lwd=c(1.5,1.5),col=c('black','red'))
+
+# Create a table for the accuracy of the forecast
+comparsion = merge(Actual_series,forecasted_series)
+comparsion$Accuracy = sign(comparsion$Actual_series)==sign(comparsion$Forecasted)
+print(comparsion)
+
+# Compute the accuracy percentage metric
+Accuracy_percentage = sum(comparsion$Accuracy == 1)*100/length(comparsion$Accuracy)
+print(Accuracy_percentage)
+
+acf(fit_FB$residuals)
+pacf(fit_FB$residuals)
+checkresiduals(fit_FB)
+```
+
+
+
+### fit arima-garch model for VZ, GOOGL and MSFT to do the prediction
+
+```{r}
+library(rugarch)
+
+# fit VZ
+arima_VZ <- auto.arima(cleaned_VZ, seasonal = TRUE,max.p = 10, max.q = 10, max.order = 10, ic = "aic",trace = T)
+
+myspec_VZ<- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1), submodel = NULL, 
+                                        external.regressors = NULL, variance.targeting = FALSE),
+                  mean.model = list(armaOrder = c(2, 0), include.mean = TRUE, archm = FALSE, 
+                                    archpow = 1, arfima = FALSE, external.regressors = NULL, 
+                                    archex = FALSE),
+                  distribution.model = "norm")
+
+rVZ_fit <- ugarchfit(spec = myspec_VZ, data=r_VZ, solver="solnp")
+rVZ_fit@fit$coef
+rVZ_var <- rVZ_fit@fit$var
+rVZ_res2 <- (rVZ_fit@fit$residuals)^2
+plot(rVZ_res2, type = "l")
+lines(rVZ_var, col = "green")
+plot(rVZ_fit)
+
+qqnorm(rVZ_fit@fit$residuals, main='Residuals(VZ)')
+qqline(rVZ_fit@fit$residuals)
+par(mfrow = c(1, 2))
+acf(na.omit(rVZ_res2, main='ACF Squared Residuals(VZ)'))
+pacf(na.omit(rVZ_res2, main='PACF Squared Residuals(VZ)'))
+
+#forcast_method_1
+total_VZ <- c(r_VZ, r_test_VZ)
+VZ_windowLength = length(r_VZ)
+VZ_foreLength = length(r_test_VZ)
+VZ_forecasts <- vector(mode="character", length=VZ_foreLength)
+
+# Model to compute the best ARIMA(p,d,q) model + GARCH(1,1)
+for (d in 0:VZ_foreLength) {
+  VZ_ReturnsOffset = total_VZ[(1+d):(VZ_windowLength+d)]
+  
+  # Fit the ARIMA model
+  final.aic <- Inf
+  final.order <- c(0,0,0)
+  for (p in 0:5) for (q in 0:5) {
+    if ( p == 0 && q == 0) {
+      next
+    }
+    
+    arimaFit = tryCatch(arima(VZ_ReturnsOffset, order=c(p, 0, q)), error=function(err) FALSE,
+                         warning=function(err) FALSE)
+    if(!is.logical(arimaFit)) {
+      current.aic <- AIC(arimaFit)
+      if (current.aic < final.aic) {
+        final.aic <- current.aic
+        final.order <- c(p, 0, q)
+        final.arima <- arima(VZ_ReturnsOffset, order=final.order)
+        }
+      } else {
+        next
+      }
+  }
+  myspec = ugarchspec(variance.model=list(garchOrder=c(1,1)),
+                    mean.model=list(armaOrder=c(final.order[1], final.order[3]), include.mean=T),
+                    distribution.model="sged")   # skewed generalized error distribution
+  
+  VZ_fit = tryCatch(ugarchfit(myspec, VZ_ReturnsOffset, solver = 'hybrid'), 
+                 error=function(e) e, warning=function(w) w)
+  
+  # If the GARCH model does not converge, set the direction to "long" else
+  # choose the correct forecast direction based on the returns prediction
+  # Output the results to the screen and the forecasts vector
+      
+  if(is(VZ_fit, "warning")) {
+      VZ_forecasts[d+1] = paste(index(VZ_ReturnsOffset[VZ_windowLength]), 1, sep=",")
+      print(paste(index(VZ_ReturnsOffset[VZ_windowLength]), 1, sep=","))
+    } else {
+      VZ_fore = ugarchforecast(VZ_fit, n.ahead=1)
+      ind = VZ_fore@forecast$seriesFor
+      VZ_forecasts[d+1] = ind[1]
+      print(VZ_forecasts[d+1])
+    }
+}
+#write.csv(VZ_forecasts, file="VZ_forecastscsv", row.names=FALSE)
+
+plot(as.matrix(r_test_VZ), type = "l", ylab = "log return of VZ")
+lines(1:length(VZ_forecasts), VZ_forecasts, col = "green")
+
+#forecast_method_2
+#rVZ_fore <- ugarchforecast(rVZ_fit, n.ahead = length(r_test_VZ))
+#plot(as.matrix(r_test_VZ), type = "l")
+#lines(1:length(rVZ_fore@forecast$seriesFor), rVZ_fore@forecast$seriesFor, col = "green")
+
+# fit googl
+
+arima_GOOGL <- auto.arima(cleaned_GOOGL, seasonal = TRUE,max.p = 10, max.q = 10, max.order = 10, ic = "aic",trace = T)
+
+myspec_GOOGL<- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1), submodel = NULL, 
+                                        external.regressors = NULL, variance.targeting = FALSE),
+                  mean.model = list(armaOrder = c(0, 0), include.mean = TRUE, archm = FALSE, 
+                                    archpow = 1, arfima = FALSE, external.regressors = NULL, 
+                                    archex = FALSE),
+                  distribution.model = "norm")
+
+rGOOGL_fit <- ugarchfit(spec = myspec_GOOGL, data=r_GOOGL, solver="solnp")
+rGOOGL_fit@fit$coef
+rGOOGL_var <- rGOOGL_fit@fit$var
+rGOOGL_res2 <- (rGOOGL_fit@fit$residuals)^2
+plot(rGOOGL_res2, type = "l")
+lines(rGOOGL_var, col = "green")
+plot(rGOOGL_fit)
+
+
+
+# fit_msft
+arima_MSFT <- auto.arima(cleaned_MSFT, seasonal = TRUE,max.p = 10, max.q = 10, max.order = 10, ic = "aic",trace = T)
+
+myspec_MSFT<- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1), submodel = NULL, 
+                                        external.regressors = NULL, variance.targeting = FALSE),
+                  mean.model = list(armaOrder = c(1, 1), include.mean = TRUE, archm = FALSE, 
+                                    archpow = 1, arfima = FALSE, external.regressors = NULL, 
+                                    archex = FALSE),
+                  distribution.model = "norm")
+
+
+rMSFT_fit <- ugarchfit(spec = myspec_MSFT,data=r_MSFT, solver="solnp")
+rMSFT_fit@fit$coef
+rMSFT_var <- rMSFT_fit@fit$var
+rMSFT_res2 <- (rMSFT_fit@fit$residuals)^2
+plot(rMSFT_res2, type = "l")
+lines(rMSFT_var, col = "green")
+plot(rMSFT_fit)
+
+
+```
